@@ -24,29 +24,41 @@
 # For more information, please refer to <http://unlicense.org/>
 
 from curses import *
+from types import *
 
-# replacement for Python's curses.textpad.Textbox object
 class TextBuffer:
-    global _SCROLL_AMOUNT
-    _SCROLL_AMOUNT = 14
-    
     def __init__(self, window):
         self.window = window
         
+        (self.win_max_y, self.win_max_x) = self.window.getmaxyx()
+        
         self._buffer_ = u''
-        self._scroll_h_ = 0
         self._scroll_page_horizontal = 0
         self._scroll_page_vertical = 0
         self._SCROLL_AMOUNT = 14
         
         # maps keystrokes/key constants to functions
         self.giant_dictionary = {
+            # ^A
+            1:          lambda c: self.jump_left(),
+            # ^E
+            5:          lambda c: self.jump_right(),
+            # M / meta
+            27:         {
+                # b
+                98:         lambda c: self.move_word_left(),
+                # f
+                102:        lambda c: self.move_word_right()
+            },
             KEY_LEFT:   lambda c: self.move_left(),
             KEY_RIGHT:  lambda c: self.move_right(),
             KEY_UP:     lambda c: self.move_up(),
-            KEY_DOWN:   lambda c: self.move_down()
+            KEY_DOWN:   lambda c: self.move_down(),
+                        
+            KEY_DC:     lambda c: self.delete_char_right()
         }
         
+        # right now we only support windows one line high
         if self.window.getmaxyx()[0] > 1:
             raise Exception
     
@@ -55,43 +67,57 @@ class TextBuffer:
              termination_characters = ['\n']):
         self.key_handler = key_handler
         self.termination_characters = termination_characters
-        return self.loop()
-    
-    def loop(self):
-        ch = self.window.get_wch()
         
-        if not ch in self.termination_characters:
-            if type(ch) is int:
-                if ch in self.giant_dictionary:
-                    self.giant_dictionary[ch](ch)
-            elif type(ch) is str:
-                self.insert_char(ch)
+        return self.loop(self.giant_dictionary)
+    
+    def loop(self, dictionary):
+        char = self.window.get_wch()
+        
+        # if dictionary is not giant_dictionary, then that means we are in a meta/dead key state
+        if char not in self.termination_characters or dictionary is not self.giant_dictionary:
+            if type(char) is str:
+                key = ord(char)
+            elif type(char) is int:
+                key = char
             else:
                 raise TypeError
             
-            return self.loop()
+            if key in dictionary:
+                value = dictionary[key]
+                
+                if type(value) is FunctionType:
+                    value(char)
+                elif type(value) is dict:
+                    return self.loop(value)
+                else:
+                    raise TypeError
+            else:
+                self.insert_char(char)
+            
+            return self.loop(self.giant_dictionary)
         else:
             new_buffer = self._buffer_
             self.delete_buffer()
+            
             return new_buffer
     
     def scroll_left(self):
         self.window.clear()
         self.window.move(0, 0)
         
-        self._scroll_h_ += 1
+        self._scroll_page_horizontal += 1
         
-        for c in self._buffer_[self._SCROLL_AMOUNT * self._scroll_h_:len(self._buffer_)]:
+        for c in self._buffer_[self._SCROLL_AMOUNT * self._scroll_page_horizontal:len(self._buffer_)]:
             self.window.addch(c)
     
     def scroll_right(self):
-        if self._scroll_h_ is not 0:
+        if self._scroll_page_horizontal is not 0:
             self.window.clear()
             self.window.move(0, 0)
             
-            self._scroll_h_ -= 1
+            self._scroll_page_horizontal -= 1
             
-            for c in self._buffer_[self._SCROLL_AMOUNT * self._scroll_h_:len(self._buffer_)]:
+            for c in self._buffer_[self._SCROLL_AMOUNT * self._scroll_page_horizontal:min(len(self._buffer_), self.win_max_x)]:
                 self.window.addch(c)
     
     def scroll_vertical(self):
@@ -130,24 +156,22 @@ class TextBuffer:
     
     def delete_buffer(self):
         self._buffer_ = u''
-        self._scroll_h_ = 0
+        self._scroll_page_horizontal = 0
         self.window.clear()
         self.window.move(0, 0)
     
     def jump_left(self):
-        (p, q) = self.window.getmaxyx()
+        self.window.move(0, 0)
         
-        if self._scroll_h_ == 0:
-            self.window.move(0,0)
-        else:
+        if not self._scroll_page_horizontal is 0:
             self.window.clear()
-            self.window.move(0,0)
+            self.window.move(0, 0)
             
-            for c in self._buffer_[0:q]:
+            for c in self._buffer_[0:self.win_max_x]:
                 self.window.addch(c)
             
-            self.window.move(0,0)
-    
+            self.window.move(0, 0)
+            
     def jump_right(self):
         return
     
@@ -160,22 +184,33 @@ class TextBuffer:
     def move_left(self):
         (y, x) = self.window.getyx()
         
-        if self._scroll_h_ is not 0 and x is 1:
+        if self._scroll_page_horizontal is not 0 and x is 1:
             self.scroll_right()
-        if not (self._scroll_h_ is 0 and x is 0):
-            self.window.move(y, max(0, x - 1))
+        
+        self.window.move(y, max(0, x - 1))
     
     def move_right(self):
-        
         (y, x) = self.window.getyx()
         
-        if self._scroll_h_ is 0:
-            self.window.move(y, max(0, x - 1))
-        else:
-            return
+        if (not self.buffer_position() is len(self._buffer_)):
+            if x is self.win_max_x - 1:
+                self.scroll_left()
+            
+            self.window.move(y, x + 1)
     
     def move_up(self):
         return
     
     def move_down(self):
         return
+    
+    def move_word_left(self):
+        return
+    
+    def move_word_right(self):
+        return
+    
+    # returns the position of the cursor relative to _buffer_
+    def buffer_position(self):
+        (y, x) = self.window.getyx()
+        return (self._scroll_page_horizontal * self._SCROLL_AMOUNT) + x
